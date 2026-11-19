@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0a10">
+<title>Đấu La: Vạn Kiếp — Giai đoạn 0</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0b0a10;color:#d9d2c3;font:16px/1.5 Georgia,'Times New Roman',serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+main{max-width:640px;margin:0 auto;padding:14px}
+h1{margin:6px 0 0;text-align:center;color:#d4a94f;letter-spacing:1px;font-size:1.6rem;text-shadow:0 0 12px #6a3fa088}
+.sub{text-align:center;color:#8a7fa0;margin:0 0 12px;font-size:.9rem}
+h2{font-size:1.05rem;color:#b99ae0;margin:0 0 8px}
+section{background:#14111d;border:1px solid #2e2540;border-radius:10px;padding:12px;margin-bottom:12px}
+button{min-height:44px;padding:8px 14px;margin:4px 4px 0 0;background:#2a1d44;color:#e8dcc0;border:1px solid #6a4fa0;border-radius:8px;font:inherit}
+button:active{background:#4a2f7a}
+input,textarea{width:100%;background:#0e0b15;color:#e8dcc0;border:1px solid #3a2d52;border-radius:8px;padding:10px;font:16px monospace}
+textarea{height:96px;margin-bottom:4px}
+.note{color:#8a7fa0;font-size:.85rem;margin:0 0 6px}
+.ok{color:#7fd69a}.err{color:#ff7b7b}
+#msg{min-height:1.5em;padding:4px 2px 14px;word-break:break-word}
+.t{display:flex;gap:8px;align-items:flex-start;border-top:1px solid #241c33;padding:6px 0;font-size:.9rem}
+.b{flex:none;min-width:64px;text-align:center;border-radius:6px;padding:0 6px;font-weight:bold;font-size:.8rem;line-height:1.8}
+.b.p{background:#17402a;color:#7fd69a}.b.f{background:#4a1a1a;color:#ff7b7b}
+.d{color:#8a7fa0;font-size:.8rem;word-break:break-word}
+</style>
+</head>
+<body>
+<main>
+<h1>Đấu La: Vạn Kiếp</h1>
+<p class="sub">Giai đoạn 0 · Nền tảng dữ liệu</p>
+<section><h2>Trạng thái save</h2><div id="status"></div><button id="bDisc" hidden>Xóa save hỏng</button></section>
+<section><h2>Kiếp hiện tại</h2><div id="life"></div>
+<input id="name" maxlength="24" placeholder="Tên nhân vật" value="Đường Tam">
+<button id="bNew">Kiếp mới</button><button id="bEnd">Kết thúc kiếp</button><button id="bAbandon">Từ bỏ kiếp</button></section>
+<section><h2>Lịch sử &amp; Di sản</h2><div id="hist"></div></section>
+<section><h2>Sao lưu</h2><textarea id="io" placeholder="Bản xuất hiện ở đây / dán bản sao lưu để nhập"></textarea>
+<button id="bExp">Xuất</button><button id="bDl">Tải file</button><button id="bImp">Nhập</button></section>
+<section><h2>Kiểm thử tự động</h2>
+<p class="note">Chạy trên bộ nhớ giả, không đụng save thật. Đây là test tự động, KHÔNG thay cho kiểm thử thực tế trên thiết bị.</p>
+<button id="bTest">Chạy kiểm thử</button><div id="tests"></div></section>
+<div id="msg" role="status"></div>
+</main>
+<script>
+'use strict';
+/* ===== Tiện ích ===== */
+const APP_ID='dau-la-van-kiep',SAVE_VERSION=2,MIN_VERSION=1,REAL_KEY='dlvk.save',TEST_KEY='dlvk.test';
+const clone=o=>JSON.parse(JSON.stringify(o));
+const canon=v=>Array.isArray(v)?'['+v.map(canon).join(',')+']':(v&&typeof v==='object')?'{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+canon(v[k])).join(',')+'}':JSON.stringify(v);
+const isObj=o=>!!o&&typeof o==='object'&&!Array.isArray(o);
+const isNum=v=>typeof v==='number'&&Number.isFinite(v)&&v>=0;
+const isInt=v=>Number.isInteger(v)&&v>=0;
+const isU32=v=>Number.isInteger(v)&&v>=0&&v<=4294967295;
+const isStr=(v,max=60)=>typeof v==='string'&&v.trim().length>0&&v.length<=max;
+const ID_RE=/^life-\d{4,}$/,idNum=id=>+id.slice(5);
+function checksum(d){const s=canon(d);let h=0x811c9dc5;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)>>>0}return h.toString(16).padStart(8,'0')}
+function memStore(){const m=new Map();return{failWrites:false,silent:false,failRemove:false,silentRemove:false,getItem:k=>m.has(k)?m.get(k):null,setItem(k,v){if(this.failWrites)throw new Error('QuotaExceeded (mock)');if(!this.silent)m.set(k,String(v))},removeItem(k){if(this.failRemove)throw new Error('removeItem lỗi (mock)');if(!this.silentRemove)m.delete(k)}}}
+
+/* ===== RNG (Mulberry32) ===== */
+const RNG=(()=>{function create(state){let a=state>>>0;const next=()=>{a=(a+0x6D2B79F5)>>>0;let t=a;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296};
+return{next,int:(lo,hi)=>lo+Math.floor(next()*(hi-lo+1)),pick:arr=>arr[Math.floor(next()*arr.length)],state:()=>a}}return{create}})();
+
+/* ===== GAME_DATA ===== */
+const GAME_DATA={
+martialSouls:[{id:'lam_ngan_thao',name:'Lam Ngân Thảo',grade:'Phổ thông',w:50},{id:'hao_thien_chuy',name:'Hạo Thiên Chùy',grade:'Khí võ hồn',w:20},{id:'thanh_long',name:'Thanh Long',grade:'Thú võ hồn',w:12},{id:'bach_ho',name:'Bạch Hổ',grade:'Thú võ hồn',w:12},{id:'ta_nguyet',name:'Tà Nguyệt',grade:'Khí võ hồn',w:6}],
+ranks:[[1,'Hồn Sư'],[11,'Đại Hồn Sư'],[21,'Hồn Tôn'],[31,'Hồn Tông'],[41,'Hồn Vương'],[51,'Hồn Đế'],[61,'Hồn Thánh'],[71,'Hồn Đấu La'],[81,'Phong Hào Đấu La'],[91,'Thần cấp']],
+deathCauses:['Tuổi già','Bệnh nặng','Tử chiến','Hồn lực phản phệ','Tai nạn']};
+const soulById=id=>GAME_DATA.martialSouls.find(s=>s.id===id);
+const rankOf=l=>GAME_DATA.ranks.filter(r=>l>=r[0]).pop()[1];
+const gainOf=(level,age)=>Math.floor(level/10)+Math.floor(age/20);
+
+/* ===== Validate (không bao giờ throw: dữ liệu xấu nào cũng trả về danh sách lỗi) ===== */
+const okId=x=>typeof x==='string'&&ID_RE.test(x);
+function validateState(s){try{const r=validateCore(s);return Array.isArray(r)?r:['Kết quả kiểm tra không hợp lệ']}catch(err){return['Lỗi nội bộ khi kiểm tra: '+(err&&err.message?err.message:String(err))]}}
+function validateCore(s){
+const e=[],add=m=>e.push(m);
+if(!isObj(s))return['Save không phải object'];
+for(const k of Object.keys(s))if(!['meta','currentLife','lifeHistory','legacy'].includes(k))add('Khóa lạ: '+k);
+const m=s.meta;let lc=null;
+if(!isObj(m))add('Thiếu meta');else{
+if(m.version!==SAVE_VERSION)add('meta.version sai');
+if(m.gameId!==APP_ID)add('meta.gameId sai');
+for(const k of['createdAt','updatedAt'])if(!isNum(m[k]))add('meta.'+k+' không hợp lệ');
+for(const k of['saveCount','lifeCounter'])if(!isInt(m[k]))add('meta.'+k+' không hợp lệ');
+if(isInt(m.lifeCounter))lc=m.lifeCounter}
+const H=s.lifeHistory,ids=new Set(),byId=new Map();let sumY=0,sumP=0,best=0;
+if(!Array.isArray(H))add('lifeHistory phải là mảng');else for(let i=0;i<H.length;i++){
+const h=H[i],p='lifeHistory['+i+']';
+if(!isObj(h)){add(p+' không hợp lệ');continue}
+if(!okId(h.id))add(p+'.id không hợp lệ');else{if(ids.has(h.id))add('ID trùng trong lifeHistory: '+h.id);else byId.set(h.id,h);ids.add(h.id);if(lc!==null&&idNum(h.id)>lc)add(p+'.id vượt lifeCounter')}
+if(!isStr(h.name,24))add(p+'.name không hợp lệ');
+if(!soulById(h.martialSoulId))add(p+'.martialSoulId không hợp lệ');
+if(!isInt(h.level)||h.level<1||h.level>99)add(p+'.level không hợp lệ');
+for(const k of['ageAtDeath','legacyGain'])if(!isInt(h[k]))add(p+'.'+k+' không hợp lệ');
+if(!isNum(h.endedAt))add(p+'.endedAt không hợp lệ');
+if(!isStr(h.cause,40))add(p+'.cause không hợp lệ');
+if(isInt(h.ageAtDeath))sumY+=h.ageAtDeath;if(isInt(h.legacyGain))sumP+=h.legacyGain;if(isInt(h.level))best=Math.max(best,h.level)}
+const c=s.currentLife;
+if(c!==null){if(!isObj(c))add('currentLife không hợp lệ');else{
+const idOk=okId(c.id);
+if(!idOk)add('currentLife.id không hợp lệ');else if(lc!==null&&idNum(c.id)>lc)add('currentLife.id vượt lifeCounter');
+if(!isStr(c.name,24))add('currentLife.name không hợp lệ');
+if(!isU32(c.seed))add('currentLife.seed không hợp lệ');
+if(!isU32(c.rngState))add('currentLife.rngState không hợp lệ');
+if(!soulById(c.martialSoulId))add('currentLife.martialSoulId không hợp lệ');
+if(!isInt(c.age))add('currentLife.age không hợp lệ');
+if(!isInt(c.level)||c.level<1||c.level>99)add('currentLife.level không hợp lệ');
+if(!isNum(c.soulPower))add('currentLife.soulPower không hợp lệ');
+const inH=idOk&&byId.has(c.id);
+if(c.status==='alive'){if(c.death!==null)add('Kiếp đang sống không được có death');if(idOk&&ids.has(c.id))add('Kiếp đang sống không được nằm trong lifeHistory')}
+else if(c.status==='dead'){
+const dObj=isObj(c.death);
+if(!dObj||!isStr(c.death.cause,40)||!isNum(c.death.at))add('currentLife.death không hợp lệ');
+if(!inH)add('Kiếp đã chết nhưng chưa có trong lifeHistory');
+else{const h=byId.get(c.id),mm=f=>add('Kiếp đã chết lệch lifeHistory ('+f+')');
+if(h.name!==c.name)mm('name');
+if(h.martialSoulId!==c.martialSoulId)mm('martialSoulId');
+if(h.ageAtDeath!==c.age)mm('ageAtDeath');
+if(h.level!==c.level)mm('level');
+if(dObj&&h.endedAt!==c.death.at)mm('endedAt');
+if(dObj&&h.cause!==c.death.cause)mm('cause');
+if(isInt(c.level)&&isInt(c.age)&&h.legacyGain!==gainOf(c.level,c.age))mm('legacyGain')}}
+else add('currentLife.status chỉ nhận alive hoặc dead')}}
+const g=s.legacy;
+if(!isObj(g))add('Thiếu legacy');else{
+for(const k of['totalLives','totalYears','bestLevel','points'])if(!isInt(g[k]))add('legacy.'+k+' không hợp lệ');
+if(Array.isArray(H)){if(g.totalLives!==H.length)add('legacy.totalLives lệch lifeHistory');if(g.totalYears!==sumY)add('legacy.totalYears lệch lifeHistory');if(g.points!==sumP)add('legacy.points lệch lifeHistory');if(g.bestLevel!==best)add('legacy.bestLevel lệch lifeHistory')}}
+return e}
+
+/* ===== Migration (mỗi bước: version N -> N+1) ===== */
+/* v1 (giả định định dạng Giai đoạn 0 cũ): meta chỉ có version/createdAt; legacy chưa có points; lifeHistory chưa có legacyGain (migrate tính bù legacyGain/points theo gainOf). */
+const MIGRATIONS={1:d=>{const o=clone(d),m=isObj(o.meta)?o.meta:{},H=Array.isArray(o.lifeHistory)?o.lifeHistory:[];
+H.forEach(h=>{if(isObj(h)&&h.legacyGain===undefined)h.legacyGain=isInt(h.level)&&isInt(h.ageAtDeath)?gainOf(h.level,h.ageAtDeath):0});
+if(isObj(o.legacy)&&o.legacy.points===undefined)o.legacy.points=H.reduce((n,h)=>n+(isObj(h)&&isInt(h.legacyGain)?h.legacyGain:0),0);
+if(isObj(o.currentLife)&&o.currentLife.death===undefined)o.currentLife.death=null;
+const nums=[...H,o.currentLife].filter(x=>isObj(x)&&ID_RE.test(x.id)).map(x=>idNum(x.id));
+o.meta={version:2,gameId:APP_ID,createdAt:m.createdAt,updatedAt:m.updatedAt!==undefined?m.updatedAt:m.createdAt,saveCount:m.saveCount!==undefined?m.saveCount:0,lifeCounter:Math.max(0,...nums)};
+return o}};
+
+/* ===== SAVE_MANAGER ===== */
+function createSaveManager(storage,key){
+const bad=(code,error)=>({ok:false,code,error});
+const serialize=d=>JSON.stringify({app:APP_ID,version:SAVE_VERSION,checksum:checksum(d),data:d});
+function parse(text){ /* kiểm tra đầy đủ, KHÔNG ghi gì */
+let env;try{env=JSON.parse(text)}catch(_){return bad('BAD_JSON','Không phải JSON hợp lệ')}
+if(!isObj(env)||env.app!==APP_ID||!isObj(env.data)||typeof env.checksum!=='string')return bad('BAD_FORMAT','Không phải file save của game này');
+const v=env.version;
+if(!Number.isInteger(v)||v<MIN_VERSION)return bad('VERSION_UNSUPPORTED','Version save không được hỗ trợ: '+v);
+if(v>SAVE_VERSION)return bad('VERSION_TOO_NEW','Save từ bản game mới hơn (v'+v+'), bản này chỉ hỗ trợ tới v'+SAVE_VERSION);
+if(!isObj(env.data.meta)||env.data.meta.version!==v)return bad('VERSION_MISMATCH','Version trong meta không khớp');
+if(checksum(env.data)!==env.checksum)return bad('CHECKSUM_MISMATCH','Checksum sai, dữ liệu bị sửa hoặc hỏng');
+let d=clone(env.data);
+for(let x=v;x<SAVE_VERSION;x++){try{d=MIGRATIONS[x](d)}catch(err){return bad('MIGRATION_FAILED','Migrate lỗi: '+err.message)}}
+const errs=validateState(d);
+if(errs.length)return bad('INVALID_DATA','Dữ liệu không hợp lệ: '+errs.slice(0,3).join('; '));
+return{ok:true,data:d,migratedFrom:v<SAVE_VERSION?v:null}}
+function load(){let raw;try{raw=storage.getItem(key)}catch(err){return{status:'error',code:'READ_FAILED',error:'Không đọc được save: '+err.message}}
+if(raw===null)return{status:'none'};const r=parse(raw);return r.ok?{status:'ok',data:r.data}:{status:'error',code:r.code,error:r.error}}
+function write(data){const errs=validateState(data);if(errs.length)return bad('INVALID_STATE',errs[0]);
+const text=serialize(data);let prev=null;
+try{prev=storage.getItem(key);storage.setItem(key,text);if(storage.getItem(key)!==text)throw new Error('ghi xong nhưng đọc lại không khớp')}
+catch(err){try{prev===null?storage.removeItem(key):storage.setItem(key,prev)}catch(_){}return bad('SAVE_FAILED','Không lưu được: '+err.message)}
+return{ok:true}}
+return{parse,load,write,serialize,raw:()=>storage.getItem(key),clear:()=>storage.removeItem(key)}}
+
+/* ===== GAME_ENGINE ===== */
+function createEngine(save,now=()=>Date.now()){
+let state=null,blocked=null,persisted=false;
+const fail=(code,error)=>({ok:false,code,error});
+const guard=()=>blocked?fail('SAVE_BLOCKED','Save bị lỗi ('+blocked.error+'). Nhập bản sao lưu hoặc xóa save hỏng trước.'):null;
+const defaultState=()=>{const t=now();return{meta:{version:SAVE_VERSION,gameId:APP_ID,createdAt:t,updatedAt:t,saveCount:0,lifeCounter:0},currentLife:null,lifeHistory:[],legacy:{totalLives:0,totalYears:0,bestLevel:0,points:0}}};
+function init(){const r=save.load();
+if(r.status==='ok'){state=r.data;persisted=true;blocked=null}
+else if(r.status==='none'){state=defaultState();persisted=false;blocked=null}
+else{state=null;persisted=false;blocked=r}
+return status()}
+const status=()=>({blocked:blocked?{code:blocked.code,error:blocked.error}:null,persisted});
+/* Mọi thay đổi đi qua commit: sửa bản sao -> validate -> ghi -> chỉ khi ghi OK mới thay state */
+function commit(next){next.meta.updatedAt=now();next.meta.saveCount++;const r=save.write(next);if(!r.ok)return r;state=next;persisted=true;return{ok:true}}
+function newLife(a){const b=guard();if(b)return b;
+if(!isStr(a.name,24))return fail('BAD_NAME','Tên nhân vật không hợp lệ (1–24 ký tự)');
+if(state.currentLife&&state.currentLife.status==='alive')return fail('LIFE_STILL_ALIVE','Kiếp hiện tại vẫn còn sống. Hãy kết thúc hoặc từ bỏ (có xác nhận) trước.');
+const next=clone(state);next.meta.lifeCounter++;
+const id='life-'+String(next.meta.lifeCounter).padStart(4,'0');
+const seed=(a.seed!==undefined?a.seed:(now()^Math.imul(next.meta.lifeCounter,2654435761)))>>>0;
+const rng=RNG.create(seed),tot=GAME_DATA.martialSouls.reduce((s,x)=>s+x.w,0);let roll=rng.next()*tot,soul=GAME_DATA.martialSouls[0];
+for(const s of GAME_DATA.martialSouls){if(roll<s.w){soul=s;break}roll-=s.w}
+next.currentLife={id,name:a.name.trim(),status:'alive',seed,rngState:0,martialSoulId:soul.id,age:6,level:1,soulPower:rng.int(1,10),death:null};
+next.currentLife.rngState=rng.state();
+return commit(next)}
+function endLife(cause){const b=guard();if(b)return b;const c=state.currentLife;
+if(!c)return fail('NO_LIFE','Chưa có kiếp nào');
+if(c.status==='dead')return fail('ALREADY_DEAD','Kiếp này đã kết thúc, không ghi lại lần nữa');
+const next=clone(state),L=next.currentLife,rng=RNG.create(L.rngState);
+L.age+=rng.int(5,70);L.level=Math.min(99,L.level+rng.int(0,60));
+const why=(typeof cause==='string'&&cause.trim())?cause.trim().slice(0,40):rng.pick(GAME_DATA.deathCauses);
+L.rngState=rng.state();L.status='dead';L.death={cause:why,at:now()};
+const gain=gainOf(L.level,L.age);
+next.lifeHistory.push({id:L.id,name:L.name,martialSoulId:L.martialSoulId,level:L.level,ageAtDeath:L.age,cause:why,endedAt:L.death.at,legacyGain:gain});
+const g=next.legacy;g.totalLives++;g.totalYears+=L.age;g.bestLevel=Math.max(g.bestLevel,L.level);g.points+=gain;
+return commit(next)}
+function abandonLife(a){if(!a||a.confirmed!==true)return fail('CONFIRM_REQUIRED','Cần xác nhận để từ bỏ kiếp đang sống');return endLife('Từ bỏ kiếp sống')}
+function exportText(){const b=guard();if(b)return b;const errs=validateState(state);if(errs.length)return fail('INVALID_STATE',errs[0]);return{ok:true,text:save.serialize(state)}}
+function importText(text){const r=save.parse(text);if(!r.ok)return r; /* lỗi -> dừng, save cũ nguyên vẹn */
+const w=save.write(r.data);if(!w.ok)return w;state=r.data;blocked=null;persisted=true;return{ok:true,migratedFrom:r.migratedFrom}}
+function discardCorrupt(a){if(!a||a.confirmed!==true)return fail('CONFIRM_REQUIRED','Cần xác nhận để xóa save hỏng');if(!blocked)return fail('NOT_BLOCKED','Save không bị hỏng');try{save.clear();if(save.raw()!==null)throw new Error('khóa vẫn còn sau khi xóa')}catch(err){return fail('CLEAR_FAILED','Không xóa được save hỏng ('+err.message+'). Save hỏng vẫn còn nguyên.')}
+init();return{ok:true}}
+function dispatch(a){switch(a&&a.type){
+case'NEW_LIFE':return newLife(a);case'END_LIFE':return endLife(a.cause);case'ABANDON_LIFE':return abandonLife(a);
+case'EXPORT':return exportText();case'IMPORT':return importText(a.text);case'DISCARD_CORRUPT':return discardCorrupt(a);
+default:return fail('UNKNOWN_ACTION','Action không hỗ trợ')}}
+return{init,status,dispatch,getState:()=>state===null?null:clone(state)}}
+
+/* ===== Instance thật ===== */
+let _ls=null;try{_ls=localStorage}catch(_){}
+const REAL_STORAGE=_ls||memStore();
+const ENGINE=createEngine(createSaveManager(REAL_STORAGE,REAL_KEY));
+
+/* ===== Kiểm thử tự động (chỉ dùng bộ nhớ giả + khóa test riêng) ===== */
+const SELF_TEST=(()=>{
+const A=(c,m)=>{if(!c)throw new Error(m||'assert thất bại')};
+const mk=()=>{const st=memStore();const sm=createSaveManager(st,TEST_KEY);let t=1e12;const en=createEngine(sm,()=>t+=1000);en.init();return{st,sm,en}};
+const raw=e=>e.st.getItem(TEST_KEY),S=e=>e.en.getState(),D=(e,a)=>e.en.dispatch(a);
+const live=(e,seed=7)=>{const r=D(e,{type:'NEW_LIFE',name:'Đường Tam',seed});A(r.ok,r.error);return r};
+const die=e=>{const r=D(e,{type:'END_LIFE'});A(r.ok,r.error);return r};
+const env=(d,v)=>JSON.stringify({app:APP_ID,version:v,checksum:checksum(d),data:d});
+const two=()=>{const a=mk();live(a);die(a);live(a,9);return a};
+return[
+['RNG','RNG Mulberry32 xác định theo seed',()=>{const a=RNG.create(42),b=RNG.create(42),c=RNG.create(43);const x=[1,2,3,4,5].map(()=>a.next()),y=[1,2,3,4,5].map(()=>b.next());A(canon(x)===canon(y),'cùng seed khác dãy');A(c.next()!==x[0],'khác seed lại trùng');A(x.every(v=>v>=0&&v<1))}],
+['RT','Export/import toàn bộ dữ liệu (không chỉ tên)',()=>{const a=two(),x=D(a,{type:'EXPORT'});A(x.ok);const b=mk(),r=D(b,{type:'IMPORT',text:x.text});A(r.ok,r.error);
+A(canon(S(a))===canon(S(b)),'state sau import lệch');const c=createEngine(createSaveManager(b.st,TEST_KEY));c.init();A(canon(c.getState())===canon(S(a)),'nạp lại từ storage lệch');
+const s=S(b);A(s.lifeHistory.length===1&&s.legacy.totalLives===1&&s.currentLife.id==='life-0002'&&s.currentLife.status==='alive')}],
+['CS','Checksum phát hiện dữ liệu bị sửa',()=>{const a=two(),o=JSON.parse(D(a,{type:'EXPORT'}).text);o.data.legacy.points+=1;const r=D(mk(),{type:'IMPORT',text:JSON.stringify(o)});A(!r.ok&&r.code==='CHECKSUM_MISMATCH',r.code)}],
+['E1','endLife cập nhật trạng thái, history, legacy đúng 1 lần và lưu',()=>{const a=mk();live(a);die(a);const s=S(a);A(s.currentLife.status==='dead'&&s.lifeHistory.length===1&&s.legacy.totalLives===1&&s.legacy.points===s.lifeHistory[0].legacyGain);
+const c=createEngine(createSaveManager(a.st,TEST_KEY));c.init();A(canon(c.getState())===canon(s),'save lệch state')}],
+['E2','endLife gọi 2 lần không nhân đôi history/legacy',()=>{const a=mk();live(a);die(a);const s=canon(S(a)),r0=raw(a),r=D(a,{type:'END_LIFE'});A(!r.ok&&r.code==='ALREADY_DEAD',r.code);A(canon(S(a))===s&&raw(a)===r0,'dữ liệu đổi sau lần gọi thứ 2');A(S(a).lifeHistory.length===1&&S(a).legacy.totalLives===1)}],
+['E3','Lưu thất bại: báo lỗi, state & save không lệch',()=>{const a=mk();live(a);const s=canon(S(a)),r0=raw(a);a.st.failWrites=true;const r=D(a,{type:'END_LIFE'});A(!r.ok&&r.code==='SAVE_FAILED',r.code);
+A(canon(S(a))===s&&S(a).currentLife.status==='alive'&&S(a).lifeHistory.length===0,'state đổi dù lưu lỗi');A(raw(a)===r0,'save đổi');
+a.st.failWrites=false;die(a);A(S(a).lifeHistory.length===1,'thử lại không thành công đúng 1 lần')}],
+['E4','Ghi "thầm lặng" thất bại (đọc lại không khớp) bị phát hiện',()=>{const a=mk();live(a);a.st.silent=true;const r=D(a,{type:'END_LIFE'});A(!r.ok&&r.code==='SAVE_FAILED',r.code);A(S(a).currentLife.status==='alive'&&S(a).lifeHistory.length===0)}],
+['N1','newLife giữ nguyên lịch sử & di sản',()=>{const a=mk();live(a);die(a);const before=clone(S(a));live(a,9);const s=S(a);A(canon(s.lifeHistory)===canon(before.lifeHistory)&&canon(s.legacy)===canon(before.legacy),'history/legacy bị đổi');
+A(s.currentLife.id==='life-0002'&&s.currentLife.status==='alive');const c=createEngine(createSaveManager(a.st,TEST_KEY));c.init();A(canon(c.getState())===canon(s))}],
+['N2','Không tạo kiếp mới khi còn sống; từ bỏ cần xác nhận',()=>{const a=mk();live(a);let r=D(a,{type:'NEW_LIFE',name:'X',seed:1});A(!r.ok&&r.code==='LIFE_STILL_ALIVE',r.code);
+r=D(a,{type:'ABANDON_LIFE'});A(!r.ok&&r.code==='CONFIRM_REQUIRED'&&S(a).currentLife.status==='alive');
+r=D(a,{type:'ABANDON_LIFE',confirmed:true});A(r.ok&&S(a).lifeHistory.length===1,r.error);live(a,5);A(S(a).lifeHistory.length===1&&S(a).legacy.totalLives===1)}],
+['N3','Chưa có save: khởi tạo legacy mặc định, chưa ghi gì',()=>{const a=mk();A(raw(a)===null);const s=S(a);A(s.currentLife===null&&canon(s.legacy)===canon({totalLives:0,totalYears:0,bestLevel:0,points:0})&&s.lifeHistory.length===0);live(a);A(S(a).legacy.totalLives===0&&raw(a)!==null)}],
+['V','Validate bắt đúng 10 loại dữ liệu sai',()=>{const base=two();const b=S(base);A(validateState(b).length===0,'dữ liệu hợp lệ bị báo lỗi');
+const cases=[['status sai',s=>{s.currentLife.status='zombie'}],['số âm',s=>{s.currentLife.level=-1}],['NaN',s=>{s.currentLife.soulPower=NaN}],['ID trùng',s=>{s.lifeHistory.push(clone(s.lifeHistory[0]))}],
+['chết mà không có trong history',s=>{s.currentLife.status='dead';s.currentLife.death={cause:'x',at:1}}],['sống mà nằm trong history',s=>{s.lifeHistory[0].id=s.currentLife.id}],['id sai',s=>{s.currentLife.id='abc'}],['thiếu legacy',s=>{delete s.legacy}],['thiếu meta',s=>{delete s.meta}],['legacy lệch',s=>{s.legacy.totalLives=5}]];
+for(const[n,f]of cases){const s=clone(b);f(s);A(validateState(s).length>0,'không bắt được: '+n)}}],
+['I1','Import sai version bị từ chối',()=>{const a=two(),o=JSON.parse(D(a,{type:'EXPORT'}).text),t=mk();
+for(const[v,code]of[[99,'VERSION_TOO_NEW'],[0,'VERSION_UNSUPPORTED'],['2','VERSION_UNSUPPORTED'],[1.5,'VERSION_UNSUPPORTED']]){const x=clone(o);x.version=v;const r=D(t,{type:'IMPORT',text:JSON.stringify(x)});A(!r.ok&&r.code===code,'version '+v+' -> '+r.code)}
+const x=clone(o);x.data.meta.version=1;x.checksum=checksum(x.data);const r=D(t,{type:'IMPORT',text:JSON.stringify(x)});A(!r.ok&&r.code==='VERSION_MISMATCH',r.code);A(raw(t)===null)}],
+['I2','Migrate save v1 -> v2 có kiểm soát',()=>{const a=two(),v1=clone(S(a));v1.meta={version:1,gameId:APP_ID,createdAt:v1.meta.createdAt};delete v1.legacy.points;v1.lifeHistory.forEach(h=>delete h.legacyGain);delete v1.currentLife.death;
+const t=mk(),r=D(t,{type:'IMPORT',text:env(v1,1)});A(r.ok&&r.migratedFrom===1,r.error);const s=S(t);A(s.meta.version===2&&s.meta.lifeCounter===2&&s.lifeHistory.length===1&&s.currentLife.death===null);const h0=s.lifeHistory[0];A(h0.legacyGain===gainOf(h0.level,h0.ageAtDeath)&&s.legacy.points===h0.legacyGain,'legacyGain/points bù sai');A(validateState(s).length===0);
+const broken=clone(v1);broken.lifeHistory[0].level=-3;const r2=D(mk(),{type:'IMPORT',text:env(broken,1)});A(!r2.ok&&r2.code==='INVALID_DATA',r2.code)}],
+['I2b','Migrate v1 có kiếp đã chết vẫn nhất quán với lifeHistory',()=>{const a=mk();live(a);die(a);const v1=clone(S(a));v1.meta={version:1,gameId:APP_ID,createdAt:v1.meta.createdAt};delete v1.legacy.points;v1.lifeHistory.forEach(h=>delete h.legacyGain);const t=mk(),r=D(t,{type:'IMPORT',text:env(v1,1)});A(r.ok,r.error);A(validateState(S(t)).length===0)}],
+['I3','Import lỗi không ghi đè save cũ',()=>{const a=two(),s0=canon(S(a)),r0=raw(a),good=clone(S(a));good.currentLife.level=-5;const old=JSON.parse(D(a,{type:'EXPORT'}).text);old.version=99;const sum=JSON.parse(D(a,{type:'EXPORT'}).text);sum.data.legacy.points+=9;
+for(const t of['rác không phải JSON','null',JSON.stringify(old),JSON.stringify(sum),env(good,2)]){const r=D(a,{type:'IMPORT',text:t});A(!r.ok,'lẽ ra phải từ chối');A(raw(a)===r0&&canon(S(a))===s0,'save cũ bị đổi sau import lỗi')}}],
+['I4','Import hợp lệ nhưng lưu lỗi: giữ nguyên save cũ',()=>{const a=two(),src=D(mk(),{type:'EXPORT'}),b=mk();live(b,3);const t=D(b,{type:'EXPORT'}).text;const s0=canon(S(a)),r0=raw(a);a.st.failWrites=true;const r=D(a,{type:'IMPORT',text:t});A(!r.ok&&r.code==='SAVE_FAILED',r.code);A(raw(a)===r0&&canon(S(a))===s0)}],
+['C','Save hỏng khi khởi động: không ghi đè, chặn thao tác',()=>{const st=memStore();st.setItem(TEST_KEY,'{hỏng');const e=createEngine(createSaveManager(st,TEST_KEY));e.init();A(e.status().blocked);const r=e.dispatch({type:'NEW_LIFE',name:'A',seed:1});A(!r.ok&&r.code==='SAVE_BLOCKED');A(st.getItem(TEST_KEY)==='{hỏng','save hỏng bị ghi đè');
+A(e.dispatch({type:'DISCARD_CORRUPT'}).code==='CONFIRM_REQUIRED');A(e.dispatch({type:'DISCARD_CORRUPT',confirmed:true}).ok&&st.getItem(TEST_KEY)===null)}],
+['V2','validateState không crash với dữ liệu hỏng (fuzz + ca cụ thể)',()=>{
+const alive=S(two()),dead=(()=>{const a=mk();live(a);die(a);return S(a)})();let n=0;
+const run=s=>{let r;try{r=validateState(s)}catch(e){throw new Error('validateState ném exception: '+e.message)}A(Array.isArray(r),'không trả về mảng');n++;return r};
+const paths=(o,p=[],out=[])=>{if(o&&typeof o==='object')for(const k of Object.keys(o)){out.push([...p,k]);paths(o[k],[...p,k],out)}return out};
+const JUNK=[null,undefined,NaN,-1,'x',[],{},true,[null],[[]],1e308,{id:1},'__del__'];
+for(const base of[alive,dead])for(const p of paths(base))for(const j of JUNK){const s=clone(base);let o=s;for(let i=0;i<p.length-1;i++)o=o[p[i]];const k=p[p.length-1];if(j==='__del__')delete o[k];else o[k]=j;run(s)}
+for(const x of[null,undefined,5,'x',[],[null],true])A(run(x).length>0,'gốc sai kiểu phải báo lỗi');
+for(const base of[alive,dead]){for(const hv of[null,{},'x',5,[]]){const s=clone(base);s.lifeHistory=hv;A(run(s).length>0,'lifeHistory sai kiểu không báo lỗi')}
+for(const el of[null,5,'x',[],{},undefined]){const s=clone(base);s.lifeHistory=[el,...s.lifeHistory];A(run(s).length>0,'phần tử history sai không báo lỗi');const s2=clone(base);s2.lifeHistory=[el];A(run(s2).length>0)}}
+{const s=clone(dead);s.lifeHistory=[null,5,...s.lifeHistory];A(run(s).length>0,'dead + history lẫn null');const s2=clone(dead);s2.lifeHistory=[{}];A(run(s2).some(e=>e.includes('chưa có trong lifeHistory')),'dead + entry rỗng');
+const s3=clone(dead);delete s3.currentLife.death;A(run(s3).length>0);const s4=clone(dead);s4.lifeHistory[0]={id:s4.currentLife.id};A(run(s4).length>0,'entry thiếu thuộc tính')}
+for(const cv of['x',[],5,undefined]){const s=clone(alive);if(cv===undefined)delete s.currentLife;else s.currentLife=cv;A(run(s).length>0,'currentLife sai kiểu')}
+A(n>400,'số ca fuzz quá ít: '+n);
+const t=mk();for(const j of[{...alive,lifeHistory:[null]},{...dead,lifeHistory:'x'},{...dead,lifeHistory:[5,null]},{...alive,currentLife:[]}]){A(t.sm.write(j).code==='INVALID_STATE','write không chặn dữ liệu hỏng');const r=D(t,{type:'IMPORT',text:env(j,2)});A(!r.ok&&r.code==='INVALID_DATA',r.code);A(raw(t)===null,'dữ liệu hỏng bị ghi');
+const st=memStore();st.setItem(TEST_KEY,env(j,2));const e=createEngine(createSaveManager(st,TEST_KEY));e.init();A(e.status().blocked&&e.status().blocked.code==='INVALID_DATA','init không chặn save hỏng')}}],
+['V3','Kiếp đã chết phải khớp lifeHistory từng trường (2 chiều)',()=>{const a=mk();live(a);die(a);const b=S(a);A(validateState(b).length===0,'dữ liệu hợp lệ bị báo lỗi');
+const has=(s,f)=>validateState(s).some(e=>e.includes('('+f+')'));const other=id=>id==='bach_ho'?'thanh_long':'bach_ho';
+const ent=[['name',h=>{h.name='Khác'}],['martialSoulId',h=>{h.martialSoulId=other(h.martialSoulId)}],['endedAt',h=>{h.endedAt+=1}],['legacyGain',h=>{h.legacyGain+=1}],['ageAtDeath',h=>{h.ageAtDeath+=1}],['level',h=>{h.level=h.level===99?98:h.level+1}],['cause',h=>{h.cause='Khác'}]];
+for(const[f,m]of ent){const s=clone(b);m(s.lifeHistory[0]);A(has(s,f),'history lệch '+f+' không bị bắt');const w=a.sm.write(s);A(!w.ok&&w.code==='INVALID_STATE','write phải chặn ('+f+')')}
+const cur=[['name',c=>{c.name='Khác'}],['martialSoulId',c=>{c.martialSoulId=other(c.martialSoulId)}],['ageAtDeath',c=>{c.age+=1}],['level',c=>{c.level=c.level===99?98:c.level+1}],['endedAt',c=>{c.death.at+=1}],['cause',c=>{c.death.cause='Khác'}],['legacyGain',c=>{c.age+=20}]];
+for(const[f,m]of cur){const s=clone(b);m(s.currentLife);A(has(s,f),'currentLife lệch '+f+' không bị bắt')}
+const r0=raw(a),s=clone(b);s.lifeHistory[0].name='Khác';const r=D(a,{type:'IMPORT',text:env(s,2)});A(!r.ok&&r.code==='INVALID_DATA'&&raw(a)===r0,'import dữ liệu mâu thuẫn phải bị từ chối')}],
+['D','discardCorrupt xử lý lỗi storage, không báo thành công giả',()=>{const mkBad=()=>{const st=memStore();st.setItem(TEST_KEY,'{hỏng');const e=createEngine(createSaveManager(st,TEST_KEY));e.init();return{st,e}};const act={type:'DISCARD_CORRUPT',confirmed:true};
+const x=mkBad();x.st.failRemove=true;let r=x.e.dispatch(act);A(!r.ok&&r.code==='CLEAR_FAILED'&&r.error.length>20,'removeItem ném lỗi mà vẫn báo '+r.code);A(x.e.status().blocked&&x.st.getItem(TEST_KEY)==='{hỏng','trạng thái đổi dù xóa lỗi');
+x.st.failRemove=false;x.st.silentRemove=true;r=x.e.dispatch(act);A(!r.ok&&r.code==='CLEAR_FAILED','xóa thầm lặng thất bại mà báo thành công');A(x.e.status().blocked&&x.st.getItem(TEST_KEY)==='{hỏng');
+x.st.silentRemove=false;r=x.e.dispatch(act);A(r.ok&&!x.e.status().blocked&&x.st.getItem(TEST_KEY)===null,'xóa bình thường phải thành công')}],
+['DT','Cùng seed cho cùng kết quả (tất định)',()=>{const a=two(),b=two();A(canon(S(a))===canon(S(b)))}]]})();
+function runAllChecks(){
+const snap=()=>{let r=null;try{r=REAL_STORAGE.getItem(REAL_KEY)}catch(_){}return r+'|'+canon(ENGINE.getState())};
+const pass=()=>SELF_TEST.map(([id,name,fn])=>{try{fn();return{id,name,pass:true,detail:''}}catch(e){return{id,name,pass:false,detail:e.message}}});
+const before=snap(),r1=pass(),r2=pass(),after=snap();
+const same=canon(r1.map(x=>x.pass))===canon(r2.map(x=>x.pass));
+r1.push({id:'ISO',name:'Test không đụng save thật & chạy lặp ổn định',pass:before===after&&same,detail:before===after?(same?'':'kết quả 2 lần chạy khác nhau'):'save thật hoặc state engine thật bị đổi'});
+return r1}
+globalThis.DLVK={runAllChecks,ENGINE,createEngine,createSaveManager,validateState,checksum,memStore};
+
+/* ===== UI (chỉ render + gửi action) ===== */
+if(typeof document!=='undefined'){(function(){
+const $=id=>document.getElementById(id);
+const el=(t,txt,cls)=>{const n=document.createElement(t);if(txt!==undefined)n.textContent=txt;if(cls)n.className=cls;return n};
+const say=(r,okTxt)=>{const m=$('msg');m.textContent=r.ok?'✓ '+okTxt:'✗ '+r.error;m.className=r.ok?'ok':'err'};
+function render(){const st=ENGINE.status(),s=ENGINE.getState(),S=$('status'),L=$('life'),H=$('hist');S.textContent='';L.textContent='';H.textContent='';
+$('bDisc').hidden=!st.blocked;
+if(st.blocked){S.append(el('div','⚠ Save lỗi: '+st.blocked.error,'err'));return}
+S.append(el('div',st.persisted?'Đã lưu · lần ghi #'+s.meta.saveCount:'Chưa có save (sẽ tạo khi bắt đầu kiếp đầu tiên)'));
+const c=s.currentLife;
+if(!c)L.append(el('div','Chưa có kiếp nào.'));else{const so=soulById(c.martialSoulId);
+L.append(el('div',c.name+' — '+(c.status==='alive'?'Còn sống':'Đã chết ('+c.death.cause+')'),c.status==='alive'?'ok':'err'),el('div','Võ Hồn: '+so.name+' ('+so.grade+')'),el('div','Tuổi '+c.age+' · Cấp '+c.level+' · '+rankOf(c.level)+' · Hồn lực bẩm sinh '+c.soulPower),el('div','Mã: '+c.id+' · seed '+c.seed,'d'))}
+$('bNew').disabled=!!c&&c.status==='alive';$('bEnd').disabled=!c||c.status!=='alive';$('bAbandon').disabled=!c||c.status!=='alive';
+const g=s.legacy;H.append(el('div','Số kiếp: '+g.totalLives+' · Tổng năm: '+g.totalYears+' · Cấp cao nhất: '+g.bestLevel+' · Điểm di sản: '+g.points));
+s.lifeHistory.slice().reverse().forEach(h=>H.append(el('div',h.id+' · '+h.name+' · '+soulById(h.martialSoulId).name+' · cấp '+h.level+' · '+h.ageAtDeath+' tuổi · '+h.cause+' (+'+h.legacyGain+')','d')))}
+$('bNew').onclick=()=>{const r=ENGINE.dispatch({type:'NEW_LIFE',name:$('name').value});say(r,'Đã tạo kiếp mới');render()};
+$('bEnd').onclick=()=>{const r=ENGINE.dispatch({type:'END_LIFE'});say(r,'Đã kết thúc kiếp');render()};
+$('bAbandon').onclick=()=>{if(!confirm('Từ bỏ kiếp đang sống? Kiếp sẽ được ghi vào lịch sử.'))return;const r=ENGINE.dispatch({type:'ABANDON_LIFE',confirmed:true});say(r,'Đã từ bỏ kiếp');render()};
+$('bDisc').onclick=()=>{if(!confirm('Xóa save hỏng? Không thể hoàn tác.'))return;const r=ENGINE.dispatch({type:'DISCARD_CORRUPT',confirmed:true});say(r,'Đã xóa save hỏng');render()};
+$('bExp').onclick=()=>{const r=ENGINE.dispatch({type:'EXPORT'});if(r.ok)$('io').value=r.text;say(r,'Đã xuất ra ô văn bản')};
+$('bDl').onclick=()=>{const r=ENGINE.dispatch({type:'EXPORT'});if(!r.ok)return say(r,'');const u=URL.createObjectURL(new Blob([r.text],{type:'application/json'})),a=document.createElement('a');a.href=u;a.download='dau-la-van-kiep-save.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1000);say(r,'Đã tạo file tải về')};
+$('bImp').onclick=()=>{const t=$('io').value.trim();if(!t)return say({ok:false,error:'Ô văn bản đang trống'});if(!confirm('Nhập sẽ thay thế save hiện tại. Tiếp tục?'))return;
+const r=ENGINE.dispatch({type:'IMPORT',text:t});say(r,r.ok&&r.migratedFrom?'Đã nhập (migrate từ v'+r.migratedFrom+')':'Đã nhập');render()};
+$('bTest').onclick=()=>{const res=runAllChecks(),T=$('tests');T.textContent='';
+res.forEach(r=>{const row=el('div','','t'),d=el('div');d.append(el('div',r.id+' · '+r.name),el('div',r.detail,'d'));row.append(el('span',r.pass?'✓ Pass':'✗ Fail','b '+(r.pass?'p':'f')),d);T.append(row)});
+const n=res.filter(r=>r.pass).length;say({ok:n===res.length,error:'Test tự động: '+n+'/'+res.length+' đạt'},'Test tự động: '+n+'/'+res.length+' đạt (chưa phải kiểm thử trên thiết bị)')};
+ENGINE.init();render();
+})()}
+</script>
+</body>
+</html>
